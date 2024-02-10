@@ -8,6 +8,9 @@
 //Framebuffer resize
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 
+//Mouse movement (iMouse)
+void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+
 //Method to read file
 int read_file(const char* filePath, std::string& fileString);
 
@@ -66,7 +69,8 @@ int main(int argc, char** argv) {
     }
 
     glfwMakeContextCurrent(window);
-    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback); //Resize window event
+    glfwSetCursorPosCallback(window, mouse_callback); //Cursor position event
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cerr << "Failed to initialize glad with processes " << std::endl;
@@ -237,4 +241,12 @@ void checkCompileErrors(unsigned int shader, std::string type) {
             std::cout << "ERROR::PROGRAM_LINKING_ERROR of type: " << type << "\n" << infoLog << "\n -- --------------------------------------------------- -- " << std::endl;
         }
     }
+}
+
+void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+  float x = static_cast<float>(xpos);
+  float y = static_cast<float>(ypos);
+
+  //Set the iMouse uniform variable to actual screen x and y
+  glUniform2f(glGetUniformLocation(shaderProgram, "iMouse"), x, y);
 }
