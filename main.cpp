@@ -4,6 +4,67 @@
 #include <glm/glm.hpp>
 #include <fstream>
 #include <sstream>
+#include <portaudio.h>
+
+// Error checking macro
+#define PA_CHECK(err) if (err != paNoError) { \
+    std::cerr << "PortAudio error: " << Pa_GetErrorText(err) << std::endl; \
+    exit(1); \
+}
+
+//Global audio data for portaudio just for now
+float audioData[512] = {0}; //Buffer for FFT/audio texture
+PaStream* audioStream;
+
+// Audio callback (stereo sine wave)
+static int audioCallback(
+    const void* input, void* output,
+    unsigned long frameCount,
+    const PaStreamCallbackTimeInfo* timeInfo,
+    PaStreamCallbackFlags statusFlags,
+    void* userData
+) {
+    static float phase         = 0.0f;
+    const float freq           = 440.0f;
+    const float sampleRate     = 44100.0f;
+    const float phaseIncrement = freq * 2.0f * 3.14159f / sampleRate;
+
+    float* out = (float*)output;
+
+    for (int i = 0; i < frameCount; i++) {
+        float sample = 0.1f * sin(phase); //Scale to [-0.1, 0.1] for safety
+        out[i * 2] = sample;              //Left channel
+        out[i * 2 + 1] = sample;          //Right channel
+        phase += phaseIncrement;
+
+        if (phase > 2.0f * 3.14159f) phase -= 2.0f * 3.14159f;
+
+        audioData[i % 512] = sample; //Update texture data
+    }
+
+    return paContinue;
+}
+
+//Initialize PortAudio (stereo, 32-bit float)
+void init_audio() {
+    PaError err = Pa_Initialize();
+    PA_CHECK(err);
+
+    err = Pa_OpenDefaultStream(
+        &audioStream,
+        0,          //No input
+        2,          //Stereo output
+        paFloat32,  //32-bit float (matches OpenAL scaling)
+        44100,      //Sample rate
+        512,        //Larger buffer to reduce glitches
+        audioCallback,
+        nullptr
+    );
+    PA_CHECK(err);
+
+    err = Pa_StartStream(audioStream);
+    PA_CHECK(err);
+}
 
 //Framebuffer resize
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
@@ -78,6 +139,8 @@ int main(int argc, char** argv) {
     }
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+    //init_audio();
 
     int samples = 4;
     float quadVerts[] = {
@@ -182,6 +245,9 @@ int main(int argc, char** argv) {
     }
 
     //Cleanup
+    Pa_StopStream(audioStream);
+    Pa_CloseStream(audioStream);
+    Pa_Terminate();
     glfwTerminate();
 }
 
