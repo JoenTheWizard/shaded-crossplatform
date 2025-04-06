@@ -82,9 +82,9 @@ void checkCompileErrors(unsigned int shader, std::string type);
 GLuint shaderProgram;
 
 //Vertex shader of the rendering quad
-const char *vertexShaderSource = 
+const char *vertexShaderSource =
 R"(#version 330 core
-layout (location = 0) in vec2 position;            
+layout (location = 0) in vec2 position;
 layout (location = 1) in vec2 inTexCoord;
 
 out vec2 texCoord;
@@ -99,12 +99,12 @@ int main(int argc, char** argv) {
 
     glm::vec2 screen(width, height);
 
-    float deltaTime = 0.0f; 
-    float lastFrame = 0.0f; 
+    float deltaTime = 0.0f;
+    float lastFrame = 0.0f;
 
     //Check if necessary arguments are passed in
     if (argc < 2) {
-      std::cout << "Usage: " << argv[0] << " <glsl-fragment-shader>" << std::endl; 
+      std::cout << "Usage: " << argv[0] << " <glsl-fragment-shader>" << std::endl;
       return -1;
     }
 
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-    //init_audio();
+    init_audio();
 
     int samples = 4;
     float quadVerts[] = {
@@ -176,7 +176,7 @@ int main(int argc, char** argv) {
     //Create a framebuffer texture
     GLuint framebuffer;
     glGenFramebuffers(1, &framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer); 
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 
     //Texture for the framebuffer
     GLuint texColor;
@@ -220,7 +220,7 @@ int main(int argc, char** argv) {
 
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
-        lastFrame = currentFrame; 
+        lastFrame = currentFrame;
 
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, true);
@@ -234,7 +234,7 @@ int main(int argc, char** argv) {
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glUseProgram(shaderProgram);
-        glUniform1f(glGetUniformLocation(shaderProgram, "iTime"), currentFrame); 
+        glUniform1f(glGetUniformLocation(shaderProgram, "iTime"), currentFrame);
         glBindVertexArray(VAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
@@ -252,10 +252,10 @@ int main(int argc, char** argv) {
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    //Make sure the viewport matches the new window dimensions; note that width and 
+    //Make sure the viewport matches the new window dimensions; note that width and
     //height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
- 
+
     //Update the iResolution uniform in the shader
     glUniform2fv(glGetUniformLocation(shaderProgram, "iResolution"), 1, &glm::vec2(width, height)[0]);
 }
