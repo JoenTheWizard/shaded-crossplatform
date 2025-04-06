@@ -1,4 +1,4 @@
-FLG=-lGL -lX11 -lpthread -lXrandr -lXi -ldl
+FLG=-lGL -lX11 -lpthread -lXrandr -lXi -ldl -lopenal
 GLAD=-I glad/include
 DEBUG=-g3
 WARNINGS=-Wall -Wextra
