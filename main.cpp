@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <portaudio.h>
+#include <mpg123.h>
 
 // Error checking macro
 #define PA_CHECK(err) if (err != paNoError) { \
@@ -16,49 +17,78 @@
 float audioData[512] = {0}; //Buffer for FFT/audio texture
 PaStream* audioStream;
 
-// Audio callback (stereo sine wave)
+//MP3 decoding parameters
+#define SAMPLE_RATE 44100
+#define CHANNELS 2
+#define FORMAT MPG123_ENC_SIGNED_16  // 16-bit PCM
+#define BUFFER_SIZE 512
+
+mpg123_handle *mh; //mpg123 handle (global so callback can access)
+
+// Audio callback (MP3 playback)
 static int audioCallback(
     const void* input, void* output,
     unsigned long frameCount,
     const PaStreamCallbackTimeInfo* timeInfo,
     PaStreamCallbackFlags statusFlags,
-    void* userData
+    void *userData
 ) {
-    static float phase         = 0.0f;
-    const float freq           = 440.0f;
-    const float sampleRate     = 44100.0f;
-    const float phaseIncrement = freq * 2.0f * 3.14159f / sampleRate;
+    size_t bytes_read;
+    int err = mpg123_read(mh, output, frameCount * CHANNELS * sizeof(short), &bytes_read);
 
-    float* out = (float*)output;
+    if (err == MPG123_DONE) {
+        return paComplete;  // End of file
+    } else if (err != MPG123_OK) {
+        std::cerr << "mpg123_read error: " << mpg123_strerror(mh) << std::endl;
+        return paAbort;
+    }
 
+    // Update audioData (optional: for visualization)
+    short* out = (short*)output;
     for (int i = 0; i < frameCount; i++) {
-        float sample = 0.1f * sin(phase); //Scale to [-0.1, 0.1] for safety
-        out[i * 2] = sample;              //Left channel
-        out[i * 2 + 1] = sample;          //Right channel
-        phase += phaseIncrement;
-
-        if (phase > 2.0f * 3.14159f) phase -= 2.0f * 3.14159f;
-
-        audioData[i % 512] = sample; //Update texture data
+        audioData[i % 512] = (float)out[i * 2] / SHRT_MAX; // Scale to [-1, 1]
     }
 
     return paContinue;
 }
 
-//Initialize PortAudio (stereo, 32-bit float)
-void init_audio() {
+// Initialize PortAudio (stereo, 16-bit signed int)
+void init_audio(const char* mp3FilePath) {
+    // Initialize mpg123
+    mpg123_init();
+    mh = mpg123_new(NULL, NULL);
+    if (!mh) {
+        std::cerr << "Failed to create mpg123 handle" << std::endl;
+        exit(1);
+    }
+
+    // Open MP3 file
+    if (mpg123_open(mh, mp3FilePath) != MPG123_OK) {
+        std::cerr << "Failed to open MP3 file: " << mpg123_strerror(mh) << std::endl;
+        mpg123_delete(mh);
+        mpg123_exit();
+        exit(1);
+    }
+
+    // Ensure output format is 16-bit stereo PCM
+    long rate;
+    int channels, encoding;
+    mpg123_getformat(mh, &rate, &channels, &encoding);
+    mpg123_format_none(mh);
+    mpg123_format(mh, rate, channels, FORMAT);
+
     PaError err = Pa_Initialize();
     PA_CHECK(err);
 
     err = Pa_OpenDefaultStream(
         &audioStream,
-        0,          //No input
-        2,          //Stereo output
-        paFloat32,  //32-bit float (matches OpenAL scaling)
-        44100,      //Sample rate
-        512,        //Larger buffer to reduce glitches
+        0,          // No input
+        CHANNELS,   // Stereo output
+        paInt16,    // 16-bit PCM
+        rate,       // Sample rate
+        BUFFER_SIZE, // Frames per buffer
         audioCallback,
-        nullptr
+        mh          // User data (mpg123 handle)
     );
     PA_CHECK(err);
 
@@ -140,7 +170,7 @@ int main(int argc, char** argv) {
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-    init_audio();
+    init_audio(argv[2]);
 
     int samples = 4;
     float quadVerts[] = {
@@ -247,7 +277,10 @@ int main(int argc, char** argv) {
     //Cleanup
     Pa_StopStream(audioStream);
     Pa_CloseStream(audioStream);
-    Pa_Terminate();
+    Pa_Terminate(); 
+    mpg123_close(mh);
+    mpg123_delete(mh);
+    mpg123_exit();
     glfwTerminate();
 }
 

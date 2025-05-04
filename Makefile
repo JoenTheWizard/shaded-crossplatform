@@ -1,4 +1,4 @@
-FLG=-lGL -lX11 -lpthread -lXrandr -lXi -ldl -lportaudio
+FLG=-lGL -lX11 -lpthread -lXrandr -lXi -ldl -lportaudio -lmpg123
 GLAD=-I glad/include
 DEBUG=-g3
 WARNINGS=-Wall -Wextra
