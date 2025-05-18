@@ -13,87 +13,241 @@
     exit(1); \
 }
 
-//Global audio data for portaudio just for now
-float audioData[512] = {0}; //Buffer for FFT/audio texture
+//Global audio data for portaudio
+const int AUDIO_BUFFER_SIZE = 512;
+float audioData[AUDIO_BUFFER_SIZE] = {0}; //Buffer for FFT/audio texture
 PaStream* audioStream;
 
-//MP3 decoding parameters
-#define SAMPLE_RATE 44100
-#define CHANNELS 2
-#define FORMAT MPG123_ENC_SIGNED_16  // 16-bit PCM
-#define BUFFER_SIZE 512
+//Audio texture for sending data to shader
+GLuint audioTexture;
 
-mpg123_handle *mh; //mpg123 handle (global so callback can access)
+//mpg123 variables
+mpg123_handle *mh = NULL;
+unsigned char *buffer = NULL;
+size_t buffer_size = 0;
+size_t done = 0;
+int channels, encoding;
+long rate;
+bool playing_file = false;
 
-// Audio callback (MP3 playback)
+//Circular buffer for MP3 audio data
+#define MP3_BUFFER_SIZE 65536  // Large buffer to prevent underruns
+float mp3CircularBuffer[MP3_BUFFER_SIZE] = {0};
+size_t mp3ReadPos = 0;
+size_t mp3WritePos = 0;
+bool mp3BufferInitialized = false;
+
+//Audio callback for audio output
 static int audioCallback(
     const void* input, void* output,
     unsigned long frameCount,
     const PaStreamCallbackTimeInfo* timeInfo,
     PaStreamCallbackFlags statusFlags,
-    void *userData
+    void* userData
 ) {
-    size_t bytes_read;
-    int err = mpg123_read(mh, output, frameCount * CHANNELS * sizeof(short), &bytes_read);
+    float* out = (float*)output;
 
-    if (err == MPG123_DONE) {
-        return paComplete;  // End of file
-    } else if (err != MPG123_OK) {
-        std::cerr << "mpg123_read error: " << mpg123_strerror(mh) << std::endl;
-        return paAbort;
-    }
+    //Only generate sine wave if we're not playing an MP3 file
+    if (!playing_file) {
+        static float phase         = 0.0f;
+        const float freq           = 440.0f;
+        const float sampleRate     = 44100.0f;
+        const float phaseIncrement = freq * 2.0f * 3.14159f / sampleRate;
 
-    // Update audioData (optional: for visualization)
-    short* out = (short*)output;
-    for (int i = 0; i < frameCount; i++) {
-        audioData[i % 512] = (float)out[i * 2] / SHRT_MAX; // Scale to [-1, 1]
+        for (int i = 0; i < frameCount; i++) {
+            float sample = 0.1f * sin(phase); //Scale to [-0.1, 0.1] for safety
+            out[i * 2] = sample;              //Left channel
+            out[i * 2 + 1] = sample;          //Right channel
+            phase += phaseIncrement;
+
+            if (phase > 2.0f * 3.14159f) phase -= 2.0f * 3.14159f;
+
+            audioData[i % AUDIO_BUFFER_SIZE] = sample; //Update texture data
+        }
+    } else {
+        //If we're playing an MP3, take audio from circular buffer
+        for (int i = 0; i < frameCount; i++) {
+            if (mp3ReadPos != mp3WritePos) { // Buffer has data
+                float sample = mp3CircularBuffer[mp3ReadPos];
+
+                //Copy sample to audio output
+                out[i * 2] = sample;      // Left channel
+                out[i * 2 + 1] = sample;  // Right channel
+
+                //Also copy to visualization buffer
+                audioData[i % AUDIO_BUFFER_SIZE] = sample;
+
+                //Advance read position
+                mp3ReadPos = (mp3ReadPos + 1) % MP3_BUFFER_SIZE;
+            } else {
+                //Buffer underrun - output silence
+                out[i * 2] = 0.0f;
+                out[i * 2 + 1] = 0.0f;
+            }
+        }
     }
 
     return paContinue;
 }
 
-// Initialize PortAudio (stereo, 16-bit signed int)
-void init_audio(const char* mp3FilePath) {
-    // Initialize mpg123
-    mpg123_init();
-    mh = mpg123_new(NULL, NULL);
-    if (!mh) {
-        std::cerr << "Failed to create mpg123 handle" << std::endl;
-        exit(1);
-    }
+//Initialize the audio texture
+void init_audio_texture() {
+    glGenTextures(1, &audioTexture);
+    glBindTexture(GL_TEXTURE_1D, audioTexture);
 
-    // Open MP3 file
-    if (mpg123_open(mh, mp3FilePath) != MPG123_OK) {
-        std::cerr << "Failed to open MP3 file: " << mpg123_strerror(mh) << std::endl;
-        mpg123_delete(mh);
-        mpg123_exit();
-        exit(1);
-    }
+    //Set texture parameters
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // Ensure output format is 16-bit stereo PCM
-    long rate;
-    int channels, encoding;
-    mpg123_getformat(mh, &rate, &channels, &encoding);
-    mpg123_format_none(mh);
-    mpg123_format(mh, rate, channels, FORMAT);
+    //Initialize with zeros
+    glTexImage1D(GL_TEXTURE_1D, 0, GL_R32F, AUDIO_BUFFER_SIZE, 0, GL_RED, GL_FLOAT, audioData);
 
+    glBindTexture(GL_TEXTURE_1D, 0);
+}
+
+//Update audio texture with current data
+void update_audio_texture() {
+    glBindTexture(GL_TEXTURE_1D, audioTexture);
+    glTexSubImage1D(GL_TEXTURE_1D, 0, 0, AUDIO_BUFFER_SIZE, GL_RED, GL_FLOAT, audioData);
+    glBindTexture(GL_TEXTURE_1D, 0);
+}
+
+//Initialize PortAudio (stereo, 32-bit float)
+void init_audio() {
     PaError err = Pa_Initialize();
     PA_CHECK(err);
 
     err = Pa_OpenDefaultStream(
         &audioStream,
-        0,          // No input
-        CHANNELS,   // Stereo output
-        paInt16,    // 16-bit PCM
-        rate,       // Sample rate
-        BUFFER_SIZE, // Frames per buffer
+        0,          //No input
+        2,          //Stereo output
+        paFloat32,  //32-bit float (matches OpenAL scaling)
+        44100,      //Sample rate
+        512,        //Larger buffer to reduce glitches
         audioCallback,
-        mh          // User data (mpg123 handle)
+        nullptr
     );
     PA_CHECK(err);
 
     err = Pa_StartStream(audioStream);
     PA_CHECK(err);
+
+    //Initialize the audio texture
+    init_audio_texture();
+}
+
+//Initialize mpg123 for playing MP3 files
+bool init_mp3(const char* filename) {
+    int err = MPG123_OK;
+
+    //Initialize mpg123
+    if (mpg123_init() != MPG123_OK) {
+        std::cerr << "Failed to initialize mpg123" << std::endl;
+        return false;
+    }
+
+    //Create a new handle
+    mh = mpg123_new(NULL, &err);
+    if (mh == NULL) {
+        std::cerr << "Failed to create mpg123 handle: " << mpg123_plain_strerror(err) << std::endl;
+        return false;
+    }
+
+    //Open the file
+    if (mpg123_open(mh, filename) != MPG123_OK) {
+        std::cerr << "Failed to open " << filename << ": " << mpg123_strerror(mh) << std::endl;
+        mpg123_delete(mh);
+        return false;
+    }
+
+    //Get format information
+    if (mpg123_getformat(mh, &rate, &channels, &encoding) != MPG123_OK) {
+        std::cerr << "Failed to get format: " << mpg123_strerror(mh) << std::endl;
+        mpg123_close(mh);
+        mpg123_delete(mh);
+        return false;
+    }
+
+    std::cout << "MP3 Format: " << rate << " Hz, " << channels << " channels" << std::endl;
+
+    //Allocate buffer
+    buffer_size = mpg123_outblock(mh);
+    buffer = new unsigned char[buffer_size];
+
+    playing_file = true;
+    return true;
+}
+
+//Read and process MP3 data
+void process_mp3_frame() {
+    if (!playing_file || !mh) return;
+
+    //Make sure we have some space in the circular buffer
+    size_t available_space = (mp3ReadPos <= mp3WritePos) ?
+                            (MP3_BUFFER_SIZE - (mp3WritePos - mp3ReadPos)) :
+                            (mp3ReadPos - mp3WritePos);
+
+    //Don't read more if we have less than 20% buffer space available
+    if (available_space < MP3_BUFFER_SIZE / 5) {
+        return;
+    }
+
+    //Read a frame from the MP3 file
+    int result = mpg123_read(mh, buffer, buffer_size, &done);
+    if (result == MPG123_OK) {
+        //Convert to float and store in the circular buffer
+        short* samples = (short*)buffer;
+        int num_samples = done / sizeof(short);
+
+        for (int i = 0; i < num_samples; i += channels) {
+            float sample;
+
+            if (channels == 2) {
+                //Average left and right channels
+                float left = samples[i] / 32768.0f;
+                float right = samples[i+1] / 32768.0f;
+                sample = (left + right) * 0.5f;
+            }
+            else {
+                sample = samples[i] / 32768.0f;
+            }
+
+            //Write to circular buffer
+            mp3CircularBuffer[mp3WritePos] = sample;
+            mp3WritePos = (mp3WritePos + 1) % MP3_BUFFER_SIZE;
+
+            //If buffer wasn't initialized yet, copy directly to audioData for immediate visualization
+            if (!mp3BufferInitialized && i/channels < AUDIO_BUFFER_SIZE) {
+                audioData[i/channels] = sample;
+            }
+        }
+
+        mp3BufferInitialized = true;
+    }
+    else if (result == MPG123_DONE) {
+        //Reached end of file
+        std::cout << "End of MP3 file, looping..." << std::endl;
+        mpg123_seek(mh, 0, SEEK_SET); // Loop back to beginning
+    }
+    else {
+        std::cerr << "Error reading MP3: " << mpg123_strerror(mh) << std::endl;
+    }
+}
+
+//Cleanup MP3 resources
+void cleanup_mp3() {
+    if (buffer) delete[] buffer;
+    if (mh) {
+        mpg123_close(mh);
+        mpg123_delete(mh);
+    }
+    mpg123_exit();
+
+    //Reset MP3 buffer state
+    mp3ReadPos = 0;
+    mp3WritePos = 0;
+    mp3BufferInitialized = false;
 }
 
 //Framebuffer resize
@@ -134,7 +288,7 @@ int main(int argc, char** argv) {
 
     //Check if necessary arguments are passed in
     if (argc < 2) {
-      std::cout << "Usage: " << argv[0] << " <glsl-fragment-shader>" << std::endl;
+      std::cout << "Usage: " << argv[0] << " <glsl-fragment-shader> [mp3-file]" << std::endl;
       return -1;
     }
 
@@ -170,7 +324,17 @@ int main(int argc, char** argv) {
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-    init_audio(argv[2]);
+    //Initialize audio
+    init_audio();
+
+    //If MP3 file is provided, initialize MP3 playback
+    if (argc > 2) {
+        if (!init_mp3(argv[2])) {
+            std::cerr << "Failed to initialize MP3 playback" << std::endl;
+        } else {
+            std::cout << "Playing MP3 file: " << argv[2] << std::endl;
+        }
+    }
 
     int samples = 4;
     float quadVerts[] = {
@@ -189,7 +353,6 @@ int main(int argc, char** argv) {
     glGenVertexArrays(1, &VAO);
     glBindVertexArray(VAO);
 
-    //Remove/deallocate shaders
     GLuint VBO;
     glGenBuffers(1, &VBO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
@@ -236,7 +399,7 @@ int main(int argc, char** argv) {
     glAttachShader(shaderProgram, fragmentShader);
     glLinkProgram(shaderProgram);
     //Check for program linking errors
-    //checkCompileErrors(shaderProgram, "PROGRAM");
+    checkCompileErrors(shaderProgram, "PROGRAM");
 
     //Remove/deallocate shaders
     glDeleteShader(vertexShader);
@@ -245,7 +408,7 @@ int main(int argc, char** argv) {
     glUseProgram(shaderProgram);
     glUniform2fv(glGetUniformLocation(shaderProgram, "iResolution"), 1, &screen[0]);
 
-
+    //Main render loop
     while (!glfwWindowShouldClose(window)) {
 
         float currentFrame = glfwGetTime();
@@ -256,6 +419,18 @@ int main(int argc, char** argv) {
             glfwSetWindowShouldClose(window, true);
         }
 
+        // Process MP3 data if playing a file
+        // Process multiple frames to ensure buffer stays filled
+        if (playing_file) {
+            // Fill buffer with enough frames
+            for (int i = 0; i < 5; i++) {
+                process_mp3_frame();
+            }
+        }
+
+        // Update audio texture with current audio data
+        update_audio_texture();
+
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 
 
@@ -264,7 +439,18 @@ int main(int argc, char** argv) {
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glUseProgram(shaderProgram);
+
+        //Update uniforms
         glUniform1f(glGetUniformLocation(shaderProgram, "iTime"), currentFrame);
+
+        //Bind audio texture to texture unit 1
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_1D, audioTexture);
+        glUniform1i(glGetUniformLocation(shaderProgram, "iAudio"), 1);
+
+        //Also pass audio buffer size
+        glUniform1i(glGetUniformLocation(shaderProgram, "iAudioSize"), AUDIO_BUFFER_SIZE);
+
         glBindVertexArray(VAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
@@ -277,10 +463,12 @@ int main(int argc, char** argv) {
     //Cleanup
     Pa_StopStream(audioStream);
     Pa_CloseStream(audioStream);
-    Pa_Terminate(); 
-    mpg123_close(mh);
-    mpg123_delete(mh);
-    mpg123_exit();
+    Pa_Terminate();
+
+    if (playing_file) {
+        cleanup_mp3();
+    }
+
     glfwTerminate();
 }
 
